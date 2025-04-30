@@ -35,40 +35,104 @@ __export(extension_exports, {
 });
 module.exports = __toCommonJS(extension_exports);
 var vscode = __toESM(require("vscode"));
+var fs = __toESM(require("fs"));
+var path = __toESM(require("path"));
 function activate(context) {
+  console.log("Extension activation started...");
   console.log("Feedback collector extension is now active!");
-  vscode.window.onDidOpenTerminal((terminal) => {
-    console.log(`Terminal opened: ${terminal.name}`);
-    terminal.sendText('echo "Terminal opened: " && echo Hello from feedback-collector!');
-    terminal.processId.then((pid) => {
-      console.log(`Terminal with PID: ${pid} is open`);
+  const logFilePath = path.join(__dirname, "feedback-collector.json");
+  console.log(`Log file path: ${logFilePath}`);
+  if (!fs.existsSync(logFilePath)) {
+    fs.writeFileSync(logFilePath, JSON.stringify([]));
+    console.log("Log file created.");
+  }
+  registerEventListeners(logFilePath, context);
+}
+function registerEventListeners(logFilePath, context) {
+  const logToJSONFile = (type, message) => {
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    const logEntry = { timestamp, type, message };
+    const logs = JSON.parse(fs.readFileSync(logFilePath, "utf-8"));
+    logs.push(logEntry);
+    fs.writeFileSync(logFilePath, JSON.stringify(logs, null, 2));
+    console.log(`Log written to file: [${type}] ${message}`);
+  };
+  vscode.commands.registerCommand("feedback-collector.runMavenBuild", async () => {
+    const folderUri = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      openLabel: "Select Maven Project Folder"
     });
+    if (!folderUri || folderUri.length === 0) {
+      vscode.window.showErrorMessage("No folder selected.");
+      return;
+    }
+    const projectPath = folderUri[0].fsPath;
+    const terminal = vscode.window.createTerminal("Maven Build");
+    terminal.show();
+    const buildLogFilePath2 = path.join(__dirname, "build-logs.txt");
+    console.log(`Capturing Maven build logs to: ${buildLogFilePath2}`);
+    terminal.sendText(`cd ${projectPath}`);
+    terminal.sendText(`/bin/bash -c "mvn clean install > ${buildLogFilePath2} 2>&1"`);
+    logToJSONFile("Command", `Maven build command executed: mvn clean install > ${buildLogFilePath2} 2>&1`);
+  });
+  vscode.commands.registerCommand("feedback-collector.runGradleBuild", async () => {
+    const folderUri = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      openLabel: "Select Gradle Project Folder"
+    });
+    if (!folderUri || folderUri.length === 0) {
+      vscode.window.showErrorMessage("No folder selected.");
+      return;
+    }
+    const projectPath = folderUri[0].fsPath;
+    const terminal = vscode.window.createTerminal("Gradle Build");
+    terminal.show();
+    const buildLogFilePath2 = path.join(__dirname, "build-logs.txt");
+    console.log(`Capturing Gradle build logs to: ${buildLogFilePath2}`);
+    terminal.sendText(`cd ${projectPath}`);
+    terminal.sendText(`/bin/bash -c "gradle clean build > ${buildLogFilePath2} 2>&1"`);
+    logToJSONFile("Command", `gradle build command executed: gradle clean build > ${buildLogFilePath2} 2>&1`);
+  });
+  const buildLogFilePath = path.join(__dirname, "build-logs.txt");
+  if (fs.existsSync(buildLogFilePath)) {
+    fs.watchFile(buildLogFilePath, () => {
+      const logs = fs.readFileSync(buildLogFilePath, "utf-8");
+      console.log("Latest build logs:", logs);
+      logToJSONFile("Build Logs", logs);
+    });
+  }
+  vscode.window.onDidOpenTerminal((terminal) => {
+    const message = `Terminal opened: ${terminal.name}`;
+    console.log(message);
+    logToJSONFile("Terminal", message);
   });
   vscode.tasks.onDidStartTask((e) => {
-    console.log(`Task started: ${e.execution.task.name}`);
+    const message = `Task started: ${e.execution.task.name}`;
+    console.log(message);
+    logToJSONFile("Task", message);
   });
   vscode.tasks.onDidEndTaskProcess((e) => {
-    if (e.exitCode !== void 0) {
-      console.log(`Task finished with exit code: ${e.exitCode}`);
-    } else {
-      console.log("Task finished without an exit code.");
-    }
-  });
-  const breakpoints = vscode.debug.breakpoints;
-  breakpoints.forEach((breakpoint) => {
-    if (breakpoint instanceof vscode.SourceBreakpoint) {
-      console.log(`Breakpoint set at file: ${breakpoint.location.uri.fsPath}, line: ${breakpoint.location.range.start.line}`);
-    }
+    const message = e.exitCode !== void 0 ? `Task finished with exit code: ${e.exitCode}` : "Task finished without an exit code.";
+    console.log(message);
+    logToJSONFile("Task", message);
   });
   vscode.debug.onDidChangeBreakpoints((e) => {
     e.added.forEach((breakpoint) => {
       if (breakpoint instanceof vscode.SourceBreakpoint) {
-        console.log(`Breakpoint added at file: ${breakpoint.location.uri.fsPath}, line: ${breakpoint.location.range.start.line}`);
+        const message = `Breakpoint added at file: ${breakpoint.location.uri.fsPath}, line: ${breakpoint.location.range.start.line}`;
+        console.log(message);
+        logToJSONFile("Breakpoint", message);
       }
     });
     e.removed.forEach((breakpoint) => {
       if (breakpoint instanceof vscode.SourceBreakpoint) {
-        console.log(`Breakpoint removed at file: ${breakpoint.location.uri.fsPath}, line: ${breakpoint.location.range.start.line}`);
+        const message = `Breakpoint removed at file: ${breakpoint.location.uri.fsPath}, line: ${breakpoint.location.range.start.line}`;
+        console.log(message);
+        logToJSONFile("Breakpoint", message);
       }
     });
   });
@@ -80,18 +144,22 @@ function activate(context) {
         const file = uri.fsPath;
         const line = diagnostic.range.start.line;
         const column = diagnostic.range.start.character;
-        console.log(`[${severity}] ${file}:${line}:${column} - ${diagnostic.message}`);
+        const message = `[${severity}] ${file}:${line}:${column} - ${diagnostic.message}`;
+        console.log(message);
+        logToJSONFile(severity, message);
       });
     });
   });
   const disposable = vscode.commands.registerCommand("feedback-collector.helloWorld", () => {
-    vscode.window.showInformationMessage("Hello World from feedback collector!");
+    const message = "Hello World from feedback collector!";
+    vscode.window.showInformationMessage(message);
+    logToJSONFile("Command", message);
   });
   context.subscriptions.push(disposable);
 }
 function deactivate() {
+  console.log("Feedback collector extension is now deactivated!");
 }
-console.log("Feedback collector extension is now deactivated!");
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   activate,

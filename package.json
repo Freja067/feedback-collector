@@ -10,7 +10,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "*"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -18,6 +18,14 @@
       {
         "command": "feedback-collector.helloWorld",
         "title": "Hello World"
+      },
+      {
+        "command": "feedback-collector.runMavenBuild",
+        "title": "Run Maven Build"
+      },
+      {
+        "command": "feedback-collector.runGradleBuild",
+        "title": "Run Gradle Build"
       }
     ]
   },
