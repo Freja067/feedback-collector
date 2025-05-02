@@ -37,25 +37,39 @@ module.exports = __toCommonJS(extension_exports);
 var vscode = __toESM(require("vscode"));
 var fs = __toESM(require("fs"));
 var path = __toESM(require("path"));
+var import_child_process = require("child_process");
 function activate(context) {
   console.log("Extension activation started...");
   console.log("Feedback collector extension is now active!");
-  const logFilePath = path.join(__dirname, "feedback-collector.json");
+  const logFilePath = path.join(__dirname, "feedback-collector.ndjson");
   console.log(`Log file path: ${logFilePath}`);
   if (!fs.existsSync(logFilePath)) {
-    fs.writeFileSync(logFilePath, JSON.stringify([]));
+    fs.writeFileSync(logFilePath, "");
     console.log("Log file created.");
   }
   registerEventListeners(logFilePath, context);
 }
 function registerEventListeners(logFilePath, context) {
-  const logToJSONFile = (type, message) => {
+  const logToJSONFile = (type, rawMessage) => {
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-    const logEntry = { timestamp, type, message };
-    const logs = JSON.parse(fs.readFileSync(logFilePath, "utf-8"));
-    logs.push(logEntry);
-    fs.writeFileSync(logFilePath, JSON.stringify(logs, null, 2));
-    console.log(`Log written to file: [${type}] ${message}`);
+    const regex = /\[(\w+)\] (.*?):(\d+):(\d+) - (.*)/;
+    const match = rawMessage.match(regex);
+    let logEntry;
+    if (match) {
+      const [, severity, file, line, column, message] = match;
+      logEntry = {
+        timestamp,
+        type,
+        file,
+        line: parseInt(line),
+        column: parseInt(column),
+        message
+      };
+    } else {
+      logEntry = { timestamp, type, message: rawMessage };
+    }
+    fs.appendFileSync(logFilePath, JSON.stringify(logEntry) + "\n");
+    console.log(`Log written: ${JSON.stringify(logEntry)}`);
   };
   vscode.commands.registerCommand("feedback-collector.runMavenBuild", async () => {
     const folderUri = await vscode.window.showOpenDialog({
@@ -69,13 +83,23 @@ function registerEventListeners(logFilePath, context) {
       return;
     }
     const projectPath = folderUri[0].fsPath;
-    const terminal = vscode.window.createTerminal("Maven Build");
-    terminal.show();
-    const buildLogFilePath2 = path.join(__dirname, "build-logs.txt");
-    console.log(`Capturing Maven build logs to: ${buildLogFilePath2}`);
-    terminal.sendText(`cd ${projectPath}`);
-    terminal.sendText(`/bin/bash -c "mvn clean install > ${buildLogFilePath2} 2>&1"`);
-    logToJSONFile("Command", `Maven build command executed: mvn clean install > ${buildLogFilePath2} 2>&1`);
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+    const buildLogFilePath = path.join(__dirname, `build-logs-${timestamp}.txt`);
+    console.log("mvn process started");
+    const mavenPath = "/Users/FrejaVindum/Desktop/apache-maven-3.9.9/bin/mvn";
+    (0, import_child_process.exec)(`${mavenPath} clean install`, {
+      cwd: projectPath,
+      env: {
+        ...process.env,
+        PATH: `${path.dirname(mavenPath)}:${process.env.PATH ?? ""}`
+      }
+    }, (error, stdout, stderr) => {
+      fs.writeFileSync(buildLogFilePath, stdout + stderr);
+      const status = error ? "FAILED" : "PASSED";
+      const logMessage = `Maven build ${status}. Logs saved to ${buildLogFilePath}`;
+      console.log(logMessage);
+      logToJSONFile("Build", logMessage);
+    });
   });
   vscode.commands.registerCommand("feedback-collector.runGradleBuild", async () => {
     const folderUri = await vscode.window.showOpenDialog({
@@ -89,31 +113,22 @@ function registerEventListeners(logFilePath, context) {
       return;
     }
     const projectPath = folderUri[0].fsPath;
-    const terminal = vscode.window.createTerminal("Gradle Build");
-    terminal.show();
-    const buildLogFilePath2 = path.join(__dirname, "build-logs.txt");
-    console.log(`Capturing Gradle build logs to: ${buildLogFilePath2}`);
-    terminal.sendText(`cd ${projectPath}`);
-    terminal.sendText(`/bin/bash -c "gradle clean build > ${buildLogFilePath2} 2>&1"`);
-    logToJSONFile("Command", `gradle build command executed: gradle clean build > ${buildLogFilePath2} 2>&1`);
-  });
-  const buildLogFilePath = path.join(__dirname, "build-logs.txt");
-  if (fs.existsSync(buildLogFilePath)) {
-    fs.watchFile(buildLogFilePath, () => {
-      const logs = fs.readFileSync(buildLogFilePath, "utf-8");
-      console.log("Latest build logs:", logs);
-      logToJSONFile("Build Logs", logs);
+    const buildLogFilePath = path.join(__dirname, "build-logs.txt");
+    (0, import_child_process.exec)("gradle clean build", { cwd: projectPath }, (error, stdout, stderr) => {
+      fs.writeFileSync(buildLogFilePath, stdout + stderr);
+      const status = error ? "FAILED" : "PASSED";
+      const logMessage = `Gradle build ${status}. Logs saved to ${buildLogFilePath}`;
+      console.log(logMessage);
+      logToJSONFile("Build", logMessage);
     });
-  }
+  });
   vscode.window.onDidOpenTerminal((terminal) => {
     const message = `Terminal opened: ${terminal.name}`;
     console.log(message);
-    logToJSONFile("Terminal", message);
   });
   vscode.tasks.onDidStartTask((e) => {
     const message = `Task started: ${e.execution.task.name}`;
     console.log(message);
-    logToJSONFile("Task", message);
   });
   vscode.tasks.onDidEndTaskProcess((e) => {
     const message = e.exitCode !== void 0 ? `Task finished with exit code: ${e.exitCode}` : "Task finished without an exit code.";
@@ -136,6 +151,7 @@ function registerEventListeners(logFilePath, context) {
       }
     });
   });
+  const loggedDiagnostics = /* @__PURE__ */ new Set();
   vscode.languages.onDidChangeDiagnostics((e) => {
     e.uris.forEach((uri) => {
       const diagnostics = vscode.languages.getDiagnostics(uri);
@@ -144,18 +160,17 @@ function registerEventListeners(logFilePath, context) {
         const file = uri.fsPath;
         const line = diagnostic.range.start.line;
         const column = diagnostic.range.start.character;
-        const message = `[${severity}] ${file}:${line}:${column} - ${diagnostic.message}`;
-        console.log(message);
-        logToJSONFile(severity, message);
+        const messageText = diagnostic.message;
+        const key = `${severity}:${file}:${line}:${column}:${messageText}`;
+        if (!loggedDiagnostics.has(key)) {
+          loggedDiagnostics.add(key);
+          const message = `[${severity}] ${file}:${line}:${column} - ${messageText}`;
+          console.log(message);
+          logToJSONFile(severity, message);
+        }
       });
     });
   });
-  const disposable = vscode.commands.registerCommand("feedback-collector.helloWorld", () => {
-    const message = "Hello World from feedback collector!";
-    vscode.window.showInformationMessage(message);
-    logToJSONFile("Command", message);
-  });
-  context.subscriptions.push(disposable);
 }
 function deactivate() {
   console.log("Feedback collector extension is now deactivated!");

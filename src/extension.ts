@@ -1,18 +1,19 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { exec } from 'child_process';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Extension activation started...');
     console.log('Feedback collector extension is now active!');
 
     // Define the JSON file path
-    const logFilePath = path.join(__dirname, 'feedback-collector.json');
+    const logFilePath = path.join(__dirname, 'feedback-collector.ndjson');
     console.log(`Log file path: ${logFilePath}`);
 
     // Ensure the JSON file exists
     if (!fs.existsSync(logFilePath)) {
-        fs.writeFileSync(logFilePath, JSON.stringify([])); // Initialize with an empty array
+        fs.writeFileSync(logFilePath, ''); // Initialize with an empty array
         console.log('Log file created.');
     }
 
@@ -22,54 +23,72 @@ export function activate(context: vscode.ExtensionContext) {
 
 function registerEventListeners(logFilePath: string, context: vscode.ExtensionContext) {
     // Helper function to log to the JSON file
-    const logToJSONFile = (type: string, message: string) => {
+    const logToJSONFile = (type: string, rawMessage: string) => {
         const timestamp = new Date().toISOString();
-        const logEntry = { timestamp, type, message };
-
-        // Read the existing logs
-        const logs = JSON.parse(fs.readFileSync(logFilePath, 'utf-8'));
-
-        // Append the new log entry
-        logs.push(logEntry);
-
-        // Write the updated logs back to the file
-        fs.writeFileSync(logFilePath, JSON.stringify(logs, null, 2));
-        console.log(`Log written to file: [${type}] ${message}`);
+    
+        // Extract file path (optional, depends on message format)
+        const regex = /\[(\w+)\] (.*?):(\d+):(\d+) - (.*)/;
+        const match = rawMessage.match(regex);
+    
+        let logEntry;
+        if (match) {
+            const [, severity, file, line, column, message] = match;
+            logEntry = {
+                timestamp,
+                type,
+                file,
+                line: parseInt(line),
+                column: parseInt(column),
+                message
+            };
+        } else {
+            // Fallback if message doesn't match expected pattern
+            logEntry = { timestamp, type, message: rawMessage };
+        }
+    
+        fs.appendFileSync(logFilePath, JSON.stringify(logEntry) + '\n');
+        console.log(`Log written: ${JSON.stringify(logEntry)}`);
     };
+    
 
-    // Provide a command to run the Maven build
     vscode.commands.registerCommand('feedback-collector.runMavenBuild', async () => {
-        // Prompt the user to select the Maven project folder
         const folderUri = await vscode.window.showOpenDialog({
             canSelectFolders: true,
             canSelectFiles: false,
             canSelectMany: false,
             openLabel: 'Select Maven Project Folder'
         });
-
+    
         if (!folderUri || folderUri.length === 0) {
             vscode.window.showErrorMessage('No folder selected.');
             return;
         }
 
         const projectPath = folderUri[0].fsPath;
-        const terminal = vscode.window.createTerminal('Maven Build');
-        terminal.show();
-
-        // Define the log file path
-        const buildLogFilePath = path.join(__dirname, 'build-logs.txt');
-        console.log(`Capturing Maven build logs to: ${buildLogFilePath}`);
-
-        // Navigate to the selected project directory
-        terminal.sendText(`cd ${projectPath}`);
-
-        // Run the Maven build command and redirect output to a file
-        terminal.sendText(`/bin/bash -c "mvn clean install > ${buildLogFilePath} 2>&1"`);
-
-        // Log the command execution
-        logToJSONFile('Command', `Maven build command executed: mvn clean install > ${buildLogFilePath} 2>&1`);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-'); // sanitize for filenames
+        const buildLogFilePath = path.join(__dirname, `build-logs-${timestamp}.txt`);
+        console.log('mvn process started')
+    
+        // Use configured Maven path or default to 'mvn'
+        const mavenPath = '/Users/FrejaVindum/Desktop/apache-maven-3.9.9/bin/mvn'; //Hardcoded path for testing
+    
+        exec(`${mavenPath} clean install`, {
+            cwd: projectPath,
+            env: {
+                ...process.env,
+                PATH: `${path.dirname(mavenPath)}:${process.env.PATH ?? ''}`
+            }
+        }, (error, stdout, stderr) => {
+            fs.writeFileSync(buildLogFilePath, stdout + stderr);
+    
+            const status = error ? 'FAILED' : 'PASSED';
+            const logMessage = `Maven build ${status}. Logs saved to ${buildLogFilePath}`;
+            console.log(logMessage);
+            logToJSONFile('Build', logMessage);
+        });
     });
-
+    
+    
     vscode.commands.registerCommand('feedback-collector.runGradleBuild', async () => {
         const folderUri = await vscode.window.showOpenDialog({
             canSelectFolders: true,
@@ -77,52 +96,38 @@ function registerEventListeners(logFilePath: string, context: vscode.ExtensionCo
             canSelectMany: false,
             openLabel: 'Select Gradle Project Folder'
         });
-
+    
         if (!folderUri || folderUri.length === 0) {
             vscode.window.showErrorMessage('No folder selected.');
             return;
         }
-
+    
         const projectPath = folderUri[0].fsPath;
-        const terminal = vscode.window.createTerminal('Gradle Build');
-        terminal.show();
-
-       // Define the log file path
-       const buildLogFilePath = path.join(__dirname, 'build-logs.txt');
-
-       console.log(`Capturing Gradle build logs to: ${buildLogFilePath}`);
-       // Navigate to the selected project directory
-       terminal.sendText(`cd ${projectPath}`);
-
-       // Run the Maven build command and redirect output to a file
-       terminal.sendText(`/bin/bash -c "gradle clean build > ${buildLogFilePath} 2>&1"`);
-
-       // Log the command execution
-       logToJSONFile('Command', `gradle build command executed: gradle clean build > ${buildLogFilePath} 2>&1`);
-   });
-
-    // Monitor the log file for changes (optional)
-    const buildLogFilePath = path.join(__dirname, 'build-logs.txt');
-    if (fs.existsSync(buildLogFilePath)) {
-        fs.watchFile(buildLogFilePath, () => {
-            const logs = fs.readFileSync(buildLogFilePath, 'utf-8');
-            console.log('Latest build logs:', logs);
-            logToJSONFile('Build Logs', logs);
+        const buildLogFilePath = path.join(__dirname, 'build-logs.txt');
+    
+        exec('gradle clean build', { cwd: projectPath }, (error, stdout, stderr) => {
+            fs.writeFileSync(buildLogFilePath, stdout + stderr);
+            
+            const status = error ? 'FAILED' : 'PASSED';
+            const logMessage = `Gradle build ${status}. Logs saved to ${buildLogFilePath}`;
+            console.log(logMessage);
+            logToJSONFile('Build', logMessage);
         });
-    }
+    });
+
 
     // Capture terminal open events
     vscode.window.onDidOpenTerminal((terminal) => {
         const message = `Terminal opened: ${terminal.name}`;
         console.log(message);
-        logToJSONFile('Terminal', message);
+        //logToJSONFile('Terminal', message);
     });
 
     // Capture task start and end
     vscode.tasks.onDidStartTask((e) => {
         const message = `Task started: ${e.execution.task.name}`;
         console.log(message);
-        logToJSONFile('Task', message);
+        //logToJSONFile('Task', message);
     });
 
     vscode.tasks.onDidEndTaskProcess((e) => {
@@ -152,30 +157,34 @@ function registerEventListeners(logFilePath: string, context: vscode.ExtensionCo
         });
     });
 
-    // Capture error and warning messages from diagnostics
-    vscode.languages.onDidChangeDiagnostics((e) => {
-        e.uris.forEach((uri) => {
-            const diagnostics = vscode.languages.getDiagnostics(uri);
-            diagnostics.forEach((diagnostic) => {
-                const severity = diagnostic.severity === vscode.DiagnosticSeverity.Error ? 'Error' : 'Warning';
-                const file = uri.fsPath;
-                const line = diagnostic.range.start.line;
-                const column = diagnostic.range.start.character;
-                const message = `[${severity}] ${file}:${line}:${column} - ${diagnostic.message}`;
-                console.log(message);
-                logToJSONFile(severity, message);
-            });
-        });
-    });
+      // Store logged diagnostics to avoid duplicates
+      const loggedDiagnostics = new Set<string>();
 
-    // Register a command for testing
-    const disposable = vscode.commands.registerCommand('feedback-collector.helloWorld', () => {
-        const message = 'Hello World from feedback collector!';
-        vscode.window.showInformationMessage(message);
-        logToJSONFile('Command', message);
-    });
+      // Capture error and warning messages from diagnostics
+      vscode.languages.onDidChangeDiagnostics((e) => {
+          e.uris.forEach((uri) => {
+              const diagnostics = vscode.languages.getDiagnostics(uri);
+              diagnostics.forEach((diagnostic) => {
+                  const severity = diagnostic.severity === vscode.DiagnosticSeverity.Error ? 'Error' : 'Warning';
+                  const file = uri.fsPath;
+                  const line = diagnostic.range.start.line;
+                  const column = diagnostic.range.start.character;
+                  const messageText = diagnostic.message;
+  
+                  // Generate a unique key for the diagnostic
+                  const key = `${severity}:${file}:${line}:${column}:${messageText}`;
+                  
+                  // Only log if we haven't seen this diagnostic before
+                  if (!loggedDiagnostics.has(key)) {
+                      loggedDiagnostics.add(key);
+                      const message = `[${severity}] ${file}:${line}:${column} - ${messageText}`;
+                      console.log(message);
+                      logToJSONFile(severity, message);
+                  }
+              });
+          });
+      });
 
-    context.subscriptions.push(disposable);
 }
 
 export function deactivate() {
