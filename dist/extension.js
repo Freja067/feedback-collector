@@ -38,15 +38,35 @@ var vscode = __toESM(require("vscode"));
 var fs = __toESM(require("fs"));
 var path = __toESM(require("path"));
 var import_child_process = require("child_process");
-function activate(context) {
+var extensionContext;
+async function activate(context) {
   console.log("Extension activation started...");
   console.log("Feedback collector extension is now active!");
+  const developerID = await vscode.window.showInputBox({
+    prompt: "Enter your developer ID",
+    placeHolder: "Developer ID",
+    validateInput: (input) => {
+      if (!input) {
+        return "Developer ID cannot be empty.";
+      }
+    }
+  });
+  const featureID = await vscode.window.showInputBox({
+    prompt: "Enter the feature ID",
+    placeHolder: "Feature ID",
+    validateInput: (input) => {
+      if (!input) {
+        return "Feature ID cannot be empty.";
+      }
+    }
+  });
+  extensionContext = context;
+  await context.globalState.update("developerID", developerID);
+  await context.globalState.update("featureID", featureID);
   const logFilePath = path.join(__dirname, "feedback-collector.ndjson");
   console.log(`Log file path: ${logFilePath}`);
-  if (!fs.existsSync(logFilePath)) {
-    fs.writeFileSync(logFilePath, "");
-    console.log("Log file created.");
-  }
+  fs.writeFileSync(logFilePath, "");
+  console.log("Log file created/cleared.");
   registerEventListeners(logFilePath, context);
 }
 function registerEventListeners(logFilePath, context) {
@@ -57,16 +77,33 @@ function registerEventListeners(logFilePath, context) {
     let logEntry;
     if (match) {
       const [, severity, file, line, column, message] = match;
+      const normalizedFile = file.replace(/\\/g, "/");
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      let relativeFile = normalizedFile;
+      if (workspaceFolder && normalizedFile.startsWith(workspaceFolder)) {
+        relativeFile = path.relative(workspaceFolder, normalizedFile);
+      }
       logEntry = {
         timestamp,
         type,
-        file,
+        file: relativeFile,
         line: parseInt(line),
-        column: parseInt(column),
-        message
+        message,
+        developerID: context.globalState.get("developerID"),
+        featureID: context.globalState.get("featureID"),
+        buildLogFilePath: null
       };
     } else {
-      logEntry = { timestamp, type, message: rawMessage };
+      logEntry = {
+        timestamp,
+        type,
+        file: null,
+        line: null,
+        message: rawMessage,
+        developerID: context.globalState.get("developerID") ?? null,
+        featureID: context.globalState.get("featureID") ?? null,
+        buildLogFilePath: context.globalState.get("buildLogFilePath") ?? null
+      };
     }
     fs.appendFileSync(logFilePath, JSON.stringify(logEntry) + "\n");
     console.log(`Log written: ${JSON.stringify(logEntry)}`);
@@ -84,7 +121,9 @@ function registerEventListeners(logFilePath, context) {
     }
     const projectPath = folderUri[0].fsPath;
     const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const buildLogFilePath = path.join(__dirname, `build-logs-${timestamp}.txt`);
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const buildLogFilePathAbs = path.join(__dirname, `build-logs-${timestamp}.txt`);
+    const buildLogFilePath = workspaceFolder ? path.relative(workspaceFolder, buildLogFilePathAbs) : buildLogFilePathAbs;
     console.log("mvn process started");
     const mavenPath = "/Users/FrejaVindum/Desktop/apache-maven-3.9.9/bin/mvn";
     (0, import_child_process.exec)(`${mavenPath} clean install`, {
@@ -94,12 +133,13 @@ function registerEventListeners(logFilePath, context) {
         PATH: `${path.dirname(mavenPath)}:${process.env.PATH ?? ""}`
       }
     }, (error, stdout, stderr) => {
-      fs.writeFileSync(buildLogFilePath, stdout + stderr);
+      fs.writeFileSync(buildLogFilePathAbs, stdout + stderr);
       const status = error ? "FAILED" : "PASSED";
       const logMessage = `Maven build ${status}. Logs saved to ${buildLogFilePath}`;
       console.log(logMessage);
       logToJSONFile("Build", logMessage);
     });
+    await context.globalState.update("buildLogFilePath", buildLogFilePath);
   });
   vscode.commands.registerCommand("feedback-collector.runGradleBuild", async () => {
     const folderUri = await vscode.window.showOpenDialog({
@@ -113,9 +153,11 @@ function registerEventListeners(logFilePath, context) {
       return;
     }
     const projectPath = folderUri[0].fsPath;
-    const buildLogFilePath = path.join(__dirname, "build-logs.txt");
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const buildLogFilePathAbs = path.join(__dirname, "build-logs.txt");
+    const buildLogFilePath = workspaceFolder ? path.relative(workspaceFolder, buildLogFilePathAbs) : buildLogFilePathAbs;
     (0, import_child_process.exec)("gradle clean build", { cwd: projectPath }, (error, stdout, stderr) => {
-      fs.writeFileSync(buildLogFilePath, stdout + stderr);
+      fs.writeFileSync(buildLogFilePathAbs, stdout + stderr);
       const status = error ? "FAILED" : "PASSED";
       const logMessage = `Gradle build ${status}. Logs saved to ${buildLogFilePath}`;
       console.log(logMessage);

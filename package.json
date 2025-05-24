@@ -16,10 +16,6 @@
   "contributes": {
     "commands": [
       {
-        "command": "feedback-collector.helloWorld",
-        "title": "Hello World"
-      },
-      {
         "command": "feedback-collector.runMavenBuild",
         "title": "Run Maven Build"
       },
