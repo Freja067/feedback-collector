@@ -18,18 +18,18 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    const featureID = await vscode.window.showInputBox({
-        prompt: 'Enter the feature ID',
-        placeHolder: 'Feature ID',
+    const iterationID = await vscode.window.showInputBox({
+        prompt: 'Enter the iteratio ID',
+        placeHolder: 'iteration ID',
         validateInput: (input) => {
             if (!input) {
-                return 'Feature ID cannot be empty.';
+                return 'iteration ID cannot be empty.';
             }
         }
     });
     extensionContext = context;
     await context.globalState.update('developerID', developerID);
-    await context.globalState.update('featureID', featureID);
+    await context.globalState.update('iterationID', iterationID);
     
     // Define the JSON file path
     const logFilePath = path.join(__dirname, 'feedback-collector.ndjson');
@@ -71,7 +71,7 @@ function registerEventListeners(logFilePath: string, context: vscode.ExtensionCo
                 line: parseInt(line),
                 message, 
                 developerID: context.globalState.get('developerID'),
-                featureID: context.globalState.get('featureID'),
+                iterationID: context.globalState.get('iterationID'),
                 buildLogFilePath: null
             };
         } 
@@ -84,7 +84,7 @@ function registerEventListeners(logFilePath: string, context: vscode.ExtensionCo
                 line: null,
                 message: rawMessage,
                 developerID: context.globalState.get('developerID') ?? null,
-                featureID: context.globalState.get('featureID') ?? null,
+                iterationID: context.globalState.get('iterationID') ?? null,
                 buildLogFilePath: context.globalState.get('buildLogFilePath') ?? null
             };
         }
